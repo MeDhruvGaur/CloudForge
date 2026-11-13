@@ -1,0 +1,33 @@
+global:
+  environment: dev
+  imageTag: latest
+  imagePullPolicy: IfNotPresent
+
+replicaCount: 1
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: app.dev.ecommerce.local
+      paths:
+        - path: /
+          pathType: Prefix
+          service: frontend
+  tls: []
+
+frontend:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+

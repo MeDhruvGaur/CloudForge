@@ -1,0 +1,102 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    cluster: ecommerce-production
+    region: us-east-1
+
+rule_files:
+  - /etc/prometheus/rules/*.yaml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+
+  # Prometheus self-monitoring
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+
+  # Kubernetes API server
+  - job_name: kubernetes-apiservers
+    kubernetes_sd_configs:
+      - role: endpoints
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      insecure_skip_verify: false
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: default;kubernetes;https
+
+  # Kubernetes nodes
+  - job_name: kubernetes-nodes
+    kubernetes_sd_configs:
+      - role: node
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      insecure_skip_verify: false
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+  # Spring Boot backend services — via pod annotations
+  - job_name: spring-boot-services
+    metrics_path: /actuator/prometheus
+    scrape_interval: 15s
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [production, staging]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        target_label: service
+
+  # Node exporter — host-level metrics
+  - job_name: node-exporter
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [monitoring]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_label_app]
+        action: keep
+        regex: node-exporter
+
+  # kube-state-metrics
+  - job_name: kube-state-metrics
+    static_configs:
+      - targets: [kube-state-metrics.monitoring.svc.cluster.local:8080]
+
+  # PostgreSQL exporter
+  - job_name: postgresql
+    static_configs:
+      - targets: [postgres-exporter.monitoring.svc.cluster.local:9187]
+
+  # Redis exporter
+  - job_name: redis
+    static_configs:
+      - targets: [redis-exporter.monitoring.svc.cluster.local:9121]
+

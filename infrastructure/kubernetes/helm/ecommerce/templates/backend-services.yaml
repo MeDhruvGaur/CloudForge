@@ -1,0 +1,78 @@
+{{- range $svc := list "product-service" "order-service" "user-service" "payment-service" "api-gateway" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $svc }}
+  namespace: {{ $.Values.global.namespace | default $.Release.Namespace }}
+  labels:
+    {{- include "ecommerce.labels" $ | nindent 4 }}
+    app: {{ $svc }}
+spec:
+  replicas: {{ $.Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ $svc }}
+  template:
+    metadata:
+      labels:
+        {{- include "ecommerce.selectorLabels" $ | nindent 8 }}
+        app: {{ $svc }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $svc }}
+          image: "{{ $.Values.global.imageRegistry }}/{{ $.Values.global.imageRepository }}/{{ $svc }}:{{ $.Values.global.imageTag }}"
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: 8080
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            failureThreshold: 3
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: {{ $.Values.global.environment }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  namespace: {{ $.Values.global.namespace | default $.Release.Namespace }}
+  labels:
+    {{- include "ecommerce.labels" $ | nindent 4 }}
+    app: {{ $svc }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app: {{ $svc }}
+{{- end }}
+

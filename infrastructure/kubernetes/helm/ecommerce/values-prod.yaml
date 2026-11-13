@@ -1,0 +1,42 @@
+global:
+  environment: production
+  imageTag: latest
+
+replicaCount: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 15
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+  hosts:
+    - host: app.ecommerce.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: frontend
+    - host: api.ecommerce.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: api-gateway
+  tls:
+    - secretName: ecommerce-prod-tls
+      hosts:
+        - app.ecommerce.com
+        - api.ecommerce.com
+

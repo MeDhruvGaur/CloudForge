@@ -1,0 +1,18 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- range $svc := list "frontend" "product-service" "order-service" "user-service" "payment-service" "api-gateway" }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pdb-{{ $svc }}
+  namespace: {{ $.Values.global.namespace | default $.Release.Namespace }}
+  labels:
+    {{- include "ecommerce.labels" $ | nindent 4 }}
+spec:
+  minAvailable: {{ $.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: {{ $svc }}
+{{- end }}
+{{- end }}
+

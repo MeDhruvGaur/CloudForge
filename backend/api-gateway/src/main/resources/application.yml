@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      routes:
+        - id: product-route
+          uri: ${PRODUCT_SERVICE_URL:http://product-service:8080}
+          predicates:
+            - Path=/api/products/**
+        - id: order-route
+          uri: ${ORDER_SERVICE_URL:http://order-service:8080}
+          predicates:
+            - Path=/api/orders/**
+        - id: user-route
+          uri: ${USER_SERVICE_URL:http://user-service:8080}
+          predicates:
+            - Path=/api/users/**
+        - id: payment-route
+          uri: ${PAYMENT_SERVICE_URL:http://payment-service:8080}
+          predicates:
+            - Path=/api/payments/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+    prometheus:
+      enabled: true
+

@@ -1,0 +1,16 @@
+apiVersion: v2
+name: ecommerce
+description: CloudForge Ecommerce Platform — Full microservices Helm chart
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+keywords:
+  - ecommerce
+  - microservices
+  - cloudforge
+
+maintainers:
+  - name: CloudForge Team
+    email: devops@cloudforge.io
+

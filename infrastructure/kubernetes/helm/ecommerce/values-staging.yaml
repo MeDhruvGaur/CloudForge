@@ -1,0 +1,35 @@
+global:
+  environment: staging
+  imageTag: latest
+
+replicaCount: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: app.staging.ecommerce.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: frontend
+    - host: api.staging.ecommerce.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: api-gateway
+  tls:
+    - secretName: ecommerce-staging-tls
+      hosts:
+        - app.staging.ecommerce.com
+        - api.staging.ecommerce.com
+

@@ -1,0 +1,120 @@
+groups:
+  - name: application.rules
+    interval: 30s
+    rules:
+
+      - alert: ServiceHighErrorRate
+        expr: |
+          (
+            rate(http_server_requests_seconds_count{status=~"5.."}[5m])
+            /
+            rate(http_server_requests_seconds_count[5m])
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "High HTTP 5xx error rate on {{ $labels.service }}"
+          description: "Error rate is {{ printf \"%.2f\" $value | humanizePercentage }} on service {{ $labels.service }} in namespace {{ $labels.namespace }}"
+          runbook: "https://docs.cloudforge.io/runbooks/high-error-rate"
+
+      - alert: ServiceHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(http_server_requests_seconds_bucket[5m])
+          ) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "P95 latency above 1s on {{ $labels.service }}"
+          description: "95th percentile latency is {{ $value | humanizeDuration }} on {{ $labels.service }}"
+          runbook: "https://docs.cloudforge.io/runbooks/high-latency"
+
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.pod }} is crash-looping"
+          description: "Container {{ $labels.container }} in pod {{ $labels.pod }} is restarting frequently in namespace {{ $labels.namespace }}"
+          runbook: "https://docs.cloudforge.io/runbooks/crash-loop"
+
+      - alert: DeploymentReplicasMismatch
+        expr: kube_deployment_spec_replicas != kube_deployment_status_available_replicas
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Deployment {{ $labels.deployment }} has fewer replicas than desired"
+          description: "Expected {{ $labels.spec_replicas }} replicas but {{ $labels.available_replicas }} are available"
+
+  - name: infrastructure.rules
+    rules:
+
+      - alert: NodeHighCPU
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High CPU on node {{ $labels.instance }}"
+          description: "CPU usage is above 85% for more than 10 minutes on {{ $labels.instance }}"
+
+      - alert: NodeDiskPressure
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 15
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Less than 15% disk space remaining on {{ $labels.mountpoint }} for {{ $labels.instance }}"
+
+      - alert: DatabaseConnectionPoolExhausted
+        expr: hikaricp_connections_active / hikaricp_connections_max > 0.9
+        for: 3m
+        labels:
+          severity: critical
+          team: database
+        annotations:
+          summary: "Database connection pool near exhaustion on {{ $labels.application }}"
+          description: "{{ printf \"%.0f\" $value | humanizePercentage }} of connection pool slots are in use"
+
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Redis memory usage above 85%"
+          description: "Redis instance is using {{ printf \"%.2f\" $value | humanizePercentage }} of its maximum memory"
+
+  - name: slo.rules
+    rules:
+
+      - alert: SLOAvailabilityBreached
+        expr: |
+          (
+            1 - (
+              rate(http_server_requests_seconds_count{status=~"5.."}[1h])
+              /
+              rate(http_server_requests_seconds_count[1h])
+            )
+          ) < 0.999
+        for: 1m
+        labels:
+          severity: critical
+          team: oncall
+        annotations:
+          summary: "Availability SLO breached — below 99.9%"
+          description: "Current availability is {{ printf \"%.4f\" $value | humanizePercentage }}. Target is 99.9%"
+          runbook: "https://docs.cloudforge.io/runbooks/slo-breach"
+

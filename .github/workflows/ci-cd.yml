@@ -1,0 +1,295 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  REGISTRY: ghcr.io
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: ecommerce-production
+  K8S_NAMESPACE: production
+
+jobs:
+
+  # ─── Stage 1: Code Quality & Unit Tests ──────────────────────────────
+  quality-gates:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Backend unit tests
+        working-directory: backend
+        run: mvn clean verify --batch-mode
+
+      - name: Frontend lint
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+
+      - name: Frontend unit tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Upload backend test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-reports
+          path: backend/**/target/surefire-reports/
+
+  # ─── Stage 2: Security Scanning ──────────────────────────────────────
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: quality-gates
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: cloudforge-ecommerce
+          path: .
+          format: HTML
+          args: --failOnCVSS 9 --scan backend/**/pom.xml --scan frontend/package.json
+
+      - name: Upload OWASP report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-report
+          path: reports/
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ─── Stage 3: Build & Push Container Images ──────────────────────────
+  build-and-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: [quality-gates, security-scan]
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ github.repository }}/frontend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push backend services
+        run: |
+          SERVICES=(api-gateway product-service order-service user-service payment-service)
+          for svc in "${SERVICES[@]}"; do
+            docker buildx build \
+              --push \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              -t "${{ env.REGISTRY }}/${{ github.repository }}/${svc}:${{ github.sha }}" \
+              ./backend/${svc}
+          done
+
+      - name: Trivy image scan (frontend)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/frontend:${{ github.sha }}
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+
+  # ─── Stage 4: Deploy to Dev ──────────────────────────────────────────
+  deploy-dev:
+    name: Deploy → Dev
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/develop'
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ecommerce-dev
+
+      - name: Helm deploy to dev
+        run: |
+          helm upgrade --install ecommerce ./infrastructure/kubernetes/helm/ecommerce \
+            --namespace dev --create-namespace \
+            --set global.imageTag=${{ github.sha }} \
+            --values ./infrastructure/kubernetes/helm/ecommerce/values-dev.yaml \
+            --wait --timeout 5m
+
+  # ─── Stage 5: Deploy to Staging ──────────────────────────────────────
+  deploy-staging:
+    name: Deploy → Staging
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ecommerce-staging
+
+      - name: Helm deploy to staging
+        run: |
+          helm upgrade --install ecommerce ./infrastructure/kubernetes/helm/ecommerce \
+            --namespace staging --create-namespace \
+            --set global.imageTag=${{ github.sha }} \
+            --values ./infrastructure/kubernetes/helm/ecommerce/values-staging.yaml \
+            --wait --timeout 8m
+
+      - name: Run smoke tests
+        run: bash infrastructure/scripts/run-smoke-tests.sh staging
+
+  # ─── Stage 6: Canary Deploy to Production ────────────────────────────
+  deploy-production:
+    name: Deploy → Production (Canary)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+      - name: Canary deployment (10% traffic)
+        run: |
+          helm upgrade --install ecommerce-canary ./infrastructure/kubernetes/helm/ecommerce \
+            --namespace ${{ env.K8S_NAMESPACE }} \
+            --set global.imageTag=${{ github.sha }} \
+            --set replicaCount=1 \
+            --set canary.enabled=true \
+            --values ./infrastructure/kubernetes/helm/ecommerce/values-prod.yaml \
+            --wait --timeout 5m
+
+      - name: Monitor canary for 5 minutes
+        run: bash infrastructure/scripts/monitor-canary.sh ${{ env.K8S_NAMESPACE }}
+
+      - name: Full production rollout
+        run: |
+          helm upgrade --install ecommerce ./infrastructure/kubernetes/helm/ecommerce \
+            --namespace ${{ env.K8S_NAMESPACE }} \
+            --set global.imageTag=${{ github.sha }} \
+            --values ./infrastructure/kubernetes/helm/ecommerce/values-prod.yaml \
+            --wait --timeout 10m
+
+      - name: Remove canary release
+        if: always()
+        run: helm uninstall ecommerce-canary --namespace ${{ env.K8S_NAMESPACE }} || true
+
+      - name: Notify Slack on success
+        if: success()
+        run: |
+          curl -s -o /dev/null -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+            -H "Content-type: application/json" \
+            -d "{\"text\":\"✅ Production deployment successful — version ${{ github.sha }} by ${{ github.actor }}\"}"
+
+  # ─── Stage 7: Auto-rollback on failure ───────────────────────────────
+  rollback:
+    name: Auto Rollback
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: failure()
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+      - name: Rollback Helm release
+        run: helm rollback ecommerce 0 --namespace ${{ env.K8S_NAMESPACE }}
+
+      - name: Notify Slack on rollback
+        run: |
+          curl -s -o /dev/null -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+            -H "Content-type: application/json" \
+            -d "{\"text\":\"⚠️ Production rollback triggered — failed version ${{ github.sha }}. Please investigate.\"}"
+
